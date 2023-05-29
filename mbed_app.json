@@ -8,5 +8,13 @@
             "help": "WiFi Password",
             "value": "\"12345678\""
         }
+    },
+    "target_overrides": {
+        "*": {
+            "target.printf_lib": "minimal-printf",
+            "platform.minimal-printf-enable-floating-point": true,
+            "platform.minimal-printf-set-floating-point-max-decimals": 6,
+            "platform.minimal-printf-enable-64-bit": false
+        }
     }
 }

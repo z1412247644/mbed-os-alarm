@@ -5,86 +5,62 @@
 #include "mbed.h"
 #include "TCPSocket.h"
 
+#include "MQTTClient.h"
+#include "MQTTEthernet.h"
+#include "MQTTmbed.h"
+#include <cstdio>
+#include <cstring>
+
+#include "MQ2.h"
+
+#define MQTTCLIENT_QOS2 1
 
 #include "ESP8266Interface.h"
+
+#define SAMPLE_RATE     300ms
+
+#define LED_ON 0
+#define LED_OFF 1
+
+#define JSON_TRUE "true"
+#define JSON_FALSE "false"
+
+
 ESP8266Interface wifi(PTE22, PTE23);
-
-const char *sec2str(nsapi_security_t sec)
-{
-    switch (sec) {
-        case NSAPI_SECURITY_NONE:
-            return "None";
-        case NSAPI_SECURITY_WEP:
-            return "WEP";
-        case NSAPI_SECURITY_WPA:
-            return "WPA";
-        case NSAPI_SECURITY_WPA2:
-            return "WPA2";
-        case NSAPI_SECURITY_WPA_WPA2:
-            return "WPA/WPA2";
-        case NSAPI_SECURITY_UNKNOWN:
-        default:
-            return "Unknown";
-    }
-}
-
-void scan_demo(WiFiInterface *wifi)
-{
-    WiFiAccessPoint *ap;
-
-    printf("Scan:\r\n");
-
-    int count = wifi->scan(NULL, 0);
-
-    /* Limit number of network arbitrary to 15 */
-    count = count < 15 ? count : 15;
-
-    ap = new WiFiAccessPoint[count];
-
-    count = wifi->scan(ap, count);
-    for (int i = 0; i < count; i++) {
-        printf("Network: %s secured: %s BSSID: %hhX:%hhX:%hhX:%hhx:%hhx:%hhx RSSI: %hhd Ch: %hhd\r\n", ap[i].get_ssid(),
-               sec2str(ap[i].get_security()), ap[i].get_bssid()[0], ap[i].get_bssid()[1], ap[i].get_bssid()[2],
-               ap[i].get_bssid()[3], ap[i].get_bssid()[4], ap[i].get_bssid()[5], ap[i].get_rssi(), ap[i].get_channel());
-    }
-    printf("%d networks available.\r\n", count);
-
-    delete[] ap;
-}
-
-void http_demo(NetworkInterface *net)
-{
-    // Open a socket on the network interface, and create a TCP connection to mbed.org
-    TCPSocket socket;
-    socket.open(net);
-
-    SocketAddress a;
-    net->gethostbyname("icanhazip.com", &a);
-    a.set_port(80);
-    socket.connect(a);
-    // Send a simple http request
-    char sbuffer[] = "GET / HTTP/1.1\r\nHost: icanhazip.com\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/113.0\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8\r\n\r\n";
-    int scount = socket.send(sbuffer, sizeof sbuffer);
-    printf("sent %d [%s]\n", scount, sbuffer);
-
-    // Recieve a simple http response and print out the response line
-    char rbuffer[64];
-    int rcount = socket.recv(rbuffer, sizeof rbuffer);
-    printf("recv %d [%s]\n", rcount, rbuffer);
-
-    // Close the socket to return its memory and bring down the network interface
-    socket.close();
-}
 
 static BufferedSerial uart(PTA2, PTA1, 115200);
 
+AnalogIn  ain_fire(A1);
+DigitalIn din_co(PTC7);
+MQ2 mq2(A0);
+
+int arrivedcount = 0;
+
+void messageArrived(MQTT::MessageData& md)
+{
+    MQTT::Message &message = md.message;
+    printf("Message arrived: qos %d, retained %d, dup %d, packetid %d\n", message.qos, message.retained, message.dup, message.id);
+    printf("Payload %.*s\n", message.payloadlen, (char*)message.payload);
+    ++arrivedcount;
+}
+
+
 int main()
 {
+    DigitalOut led_red(LED1);
+    DigitalOut led_blue(LED3);
+
+    mq2.begin();
+    // MQ2_data_t MQ2_data;
+    
+    ain_fire.set_reference_voltage(3.3);
+    din_co.mode(PullUp);
+
+    float mq_CO, fire_vo;
+
     SocketAddress a;
 
-    printf("WiFi example\r\n\r\n");
-
-    scan_demo(&wifi);
+    printf("WiFi Start\r\n\r\n");
 
     printf("\r\nConnecting...\r\n");
     int ret = wifi.connect(MBED_CONF_APP_WIFI_SSID, MBED_CONF_APP_WIFI_PASSWORD, NSAPI_SECURITY_WPA_WPA2);
@@ -103,9 +79,96 @@ int main()
     printf("Gateway: %s\r\n", a.get_ip_address());
     printf("RSSI: %d\r\n\r\n", wifi.get_rssi());
 
-    http_demo(&wifi);
+    // std::tm time_now;
+    // wifi.get_time(&time_now);
+    // set_time(mktime(&time_now));
+    // time_t seconds = time(NULL);
 
-    wifi.disconnect();
+    // printf("Time as seconds since January 1, 1970 = %u\n", (unsigned int)mktime(&time_now));
 
-    printf("\r\nDone\r\n");
+    // printf("Time as a basic string = %s", ctime(&seconds));
+
+    // char buffer[32];
+    // strftime(buffer, 32, "%I:%M %p\n", localtime(&seconds));
+    // printf("Time as a custom formatted string = %s", buffer);
+
+
+    MQTTSocket eth0(&wifi);
+    char* hostname = "broker.emqx.io";
+    int port = 1883;
+    int rc = eth0.connect(hostname, port);
+    if (rc != 0)
+        printf("rc from TCP connect is %d\n", rc);
+    
+    MQTT::Client<MQTTSocket, Countdown> client =  MQTT::Client<MQTTSocket, Countdown>(eth0);
+    // http_demo(&wifi);
+    
+    MQTTPacket_connectData data = MQTTPacket_connectData_initializer;       
+    data.MQTTVersion = 3;
+    data.clientID.cstring = "mbed-sample";
+    if ((rc = client.connect(data)) != 0)
+        printf("rc from MQTT connect is %d\n", rc);
+    
+    char* topic = "testtopic/kl25_Data";
+    // if ((rc = client.subscribe(topic, MQTT::QOS0, messageArrived)) != 0)
+    //     printf("rc from MQTT subscribe is %d\n", rc);
+
+    MQTT::Message message;
+    char buf[100];
+    char co_alarm[10], fire_alarm[10];
+
+    // sprintf(buf,"hello world");
+    message.qos = MQTT::QOS0;
+    message.retained = false;
+    message.dup = false;
+    message.payload = (void*)buf;
+    message.payloadlen = strlen(buf)+1;
+    rc = client.publish(topic, message);
+    // while (arrivedcount < 10)
+    client.yield(100);
+    
+    while (true) {
+        // led_red = !led_red;
+        // led_blue = led_red;
+        mq_CO = mq2.readLPG();
+        fire_vo = ain_fire.read_voltage();
+        // printf("-------- %d -----\r\n", din_co.read());
+        if(mq_CO>10 || !din_co.read()){
+            led_blue.write(LED_ON);
+            strcpy(co_alarm, JSON_TRUE);
+        }else{
+            led_blue.write(LED_OFF);
+            strcpy(co_alarm, JSON_FALSE);
+        }
+        if(fire_vo<3.0){
+            led_red.write(LED_ON);
+            strcpy(fire_alarm, JSON_TRUE);
+        }else{
+            led_red.write(LED_OFF);
+            strcpy(fire_alarm, JSON_FALSE);
+        }        
+
+        sprintf(buf, "{\r\n\"co_data\": %.1f,\r\n\"co_alarm\": %s,\r\n\"fire_alarm\": %s\r\n}", mq_CO, co_alarm, fire_alarm);
+        message.qos = MQTT::QOS0;
+        message.retained = false;
+        message.dup = false;
+        message.payload = (void*)buf;
+        message.payloadlen = strlen(buf)+1;
+        rc = client.publish(topic, message);
+        if(rc!=0){
+            printf("rc from MQTT publish is %d\n", rc);
+        }
+        printf("%s", buf);
+        // printf("CO PPM: %.0f\r\n",mq_CO);
+        // printf("................................\r\n"); 
+        printf("read_voltage=%f\r\n", fire_vo);
+        printf("................................\r\n"); 
+        client.yield(1000);
+        //ThisThread::sleep_for(SAMPLE_RATE);
+        
+    }
+
+    // wifi.disconnect();
+
+    // printf("\r\nDone\r\n");
 }
