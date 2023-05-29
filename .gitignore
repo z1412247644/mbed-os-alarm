@@ -2,24 +2,24 @@
 
 # clion
 .idea/
-cmake-build-*/
+3cmake-build-*/
 
 # exporters
-GettingStarted.html
-eclipse-extras/
+#GettingStarted.html
+#eclipse-extras/
 
 # mbed build system
 mbed-os/
-mbed_settings.py
-mbed_config.h
+#mbed_settings.py
+3mbed_config.h
 *.pyc
 BUILD/
 cmake-build-debug/
 BUILD
-.mbed
-compile_commands.json
+#.mbed
+3compile_commands.json
 .clangd
 .cache
-COMPONENT_ism43362
+#COMPONENT_ism43362
 mbed-os
-MQTT
+#MQTT
